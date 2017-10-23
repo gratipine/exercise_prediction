@@ -1,23 +1,22 @@
 #Analysis
 
 ## Goals of the analysis
-The goal of the analysis is to predict how well an experiment participant is doing an exercise based on a number of variables like positions and time.
+The goal of the analysis is to predict how well an experiment participant is doing an exercise based on a number of variables like positions and time. 
 
 ## Libraries used
 ```{r}
 set.seed(123)
-library(caret)
-library(splines)
-library(kernlab)
-library(data.table)
-library(ggplot2)
-library(randomForest)
+suppressMessages(library(caret))
+suppressMessages(library(splines))
+suppressMessages(library(kernlab))
+suppressWarnings(library(data.table))
+suppressMessages(suppressWarnings(library(randomForest)))
 ```
 There are additional libraries used for each model, so if you are running this you might have to install additional packages.
 
 ##Loading the data and splitting it
 
-We load just the traning data set, with the idea that the test dataset given in the exercise will be used as a validation set to calculate the out of sample error.
+We load just the traning data set for now. It is split into training and testing data set.
 
 ```{r}
 training <- read.csv("Data/pml-training.csv", stringsAsFactors = FALSE)
@@ -36,9 +35,7 @@ In order to make the data set more manageable we:
 
 - remove all the near zero variables
 
-- do principal companent analysis to lower the number of variables we have to deal with 
-
-- create dummy variables for the remaining factor variables
+- do principal component analysis to lower the number of variables we have to deal with 
 
 - transform the timestamp variables from character to timestamp
 
@@ -60,13 +57,6 @@ todo <- predict(preProc, train_2)
 todo$user_name <- as.factor(todo$user_name)
 todo$classe <- train_2$classe
 
-# Creating Dummy variables out of the factor variables
-
-dummies <- dummyVars(classe ~ user_name, data = todo)
-am <- predict(dummies, newdata = todo)
-todo <- cbind (todo, data.table(am))
-todo <- subset(todo, select = -user_name)
-
 #Creating useful timestamp
 todo$cvtd_timestamp <- as.POSIXct(strptime(todo$cvtd_timestamp, format = "%d/%m/%Y %H:%M"))
 todo$classe <- factor(as.character(todo$classe))
@@ -74,15 +64,15 @@ todo$classe <- factor(as.character(todo$classe))
 
 ##Model Selection
 
-I found 4 models to run, which worked fine with the current selection of numeric and factor variables. They were run over here, with the idea of later selecting the best ones. The Rpart method and the Ctree method were the worst performing ones, thus they were removed from the final prediction.
+I found 4 models to run, which worked fine with the current selection of numeric and factor variables. They were run  with the idea of later selecting the best ones. The Rpart method and the Ctree method were the worst performing ones, thus they were removed from the final prediction. 
 
 ```{r}
 todo <- data.table(todo)
 model <- randomForest(as.factor(classe)~., data=todo)
 model2 <- train(classe ~., data = todo, method = "treebag")
 
-insample <- predict(model, newdata = todo[,-2])
-insample2 <- predict(model2, newdata = todo[,-2])
+insample <- predict(model, newdata = todo[,-3])
+insample2 <- predict(model2, newdata = todo[,-3])
 ```
 
 ##Initial model evaluation
@@ -99,24 +89,26 @@ test_2 <- test_2[, -to_remove]
 test_2 <- test_2[,to_keep]
 todo_test <- predict(preProc, newdata = test_2)
 todo_test$user_name <- as.factor(todo_test$user_name)
-am <- predict(dummies, newdata = todo_test)
-todo_test <-cbind(todo_test, data.table(am))
-todo_test <- subset(todo_test, select = - user_name)
 todo_test$cvtd_timestamp <- as.POSIXct(strptime(todo_test$cvtd_timestamp, format = "%d/%m/%Y %H:%M"))
 ```
 
-##Run models on test set
+##Run models and Cross validaton
+
 ```{r}
-firstPrediciton <- predict(model, newdata = todo_test[,-2])
-secondPrediction <- predict(model2, newdata = todo_test[,-2])
+firstPrediciton <- predict(model, newdata = todo_test[,-3])
+secondPrediction <- predict(model2, newdata = todo_test[,-3])
 
 todo_test <- cbind(todo_test, firstPrediciton)
 todo_test <- cbind(todo_test, secondPrediction)
 
 predDF <- data.frame(firstPrediciton, secondPrediction, classe = todo_test$classe)
-combModel <- train(classe~., method="C5.0", data=predDF)
+trainControlFunc <- trainControl(method = "cv", number=10)
+suppressWarnings(combModel <- train(classe~., method="C5.0", data=predDF, trainControl = trainControlFunc))
 combPrediction <- predict(combModel, newdata = predDF)
+print(combModel)
 ```
+
+Cross validation was run on the last model that predicts. From it we can see that expected accuracy is around 97.5%, meaning the out of sample error should be a little more than 2.5%. And from the following results we can see that it shares first place with the first model (random forest), but I chose it because I expect blends to be better than the single one in predicting for a new dataset.
 
 ```{r}
 sum(firstPrediciton != todo_test$classe)/nrow(todo_test)
@@ -124,21 +116,29 @@ sum(secondPrediction != todo_test$classe)/nrow(todo_test)
 sum(combPrediction != todo_test$classe)/nrow(todo_test)
 ```
 
-##Run models on validation set
+##Run models on new data set
 ###Read in
 ```{r}
-validation <- read.csv("Data/pml-testing.csv", stringsAsFactors = FALSE)
+results <- read.csv("Data/pml-testing.csv", stringsAsFactors = FALSE)
 ```
 
 ###PreProcess
+We do the same things over here that we did on the other two data sets
+
 ```{r}
-validation <- validation[,-1]
-validation <- validation[,-to_remove]
-validation <- validation[,to_keep]
-todo_validation <- predict(preProc, newdata = validation)
-todo_validation$user_name <- as.factor(todo_validation$user_name)
-am <- predict(dummies, newdata = todo_validation)
-todo_validation <- cbind(todo_validation, data.table(am))
-todo_validation <- subset(todo_validation, select = - user_name)
-todo_validation$cvtd_timestamp <- as.POSIXct(strptime(todo_validation$cvtd_timestamp, format = "%d/%m/%Y %H:%M"))
+results <- results[,-1]
+results <- results[,-to_remove]
+results <- results[,to_keep]
+todo_results <- predict(preProc, newdata = results)
+todo_results$user_name <- as.factor(todo_results$user_name)
+todo_results$cvtd_timestamp <- as.POSIXct(strptime(todo_results$cvtd_timestamp, format = "%d/%m/%Y %H:%M"))
+```
+
+###Model Application
+```{r}
+firstVal <- predict(model, newdata = todo_results)
+secondVal <- predict(model2, newdata = todo_results)
+predVDF <- data.frame(firstPrediciton = firstVal, secondPrediction = secondVal)
+combPredV <- predict(combModel, newdata = predVDF)
+todo_results <- cbind(todo_results, combPredV)
 ```

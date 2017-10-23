@@ -127,19 +127,18 @@ $(document).ready(function () {
 </div>
 <div id="libraries-used" class="section level2">
 <h2>Libraries used</h2>
-<pre class="(r)"><code>set.seed(123)
-library(caret)
-library(splines)
-library(kernlab)
-library(data.table)
-library(ggplot2)
-library(randomForest)</code></pre>
+<pre class="r"><code>set.seed(123)
+suppressMessages(library(caret))
+suppressMessages(library(splines))
+suppressMessages(library(kernlab))
+suppressWarnings(library(data.table))
+suppressMessages(suppressWarnings(library(randomForest)))</code></pre>
 <p>There are additional libraries used for each model, so if you are running this you might have to install additional packages.</p>
 </div>
 <div id="loading-the-data-and-splitting-it" class="section level2">
 <h2>Loading the data and splitting it</h2>
-<p>We load just the traning data set, with the idea that the test dataset given in the exercise will be used as a validation set to calculate the out of sample error.</p>
-<pre class="(r)"><code>training &lt;- read.csv(&quot;Data/pml-training.csv&quot;, stringsAsFactors = FALSE)
+<p>We load just the traning data set for now. It is split into training and testing data set.</p>
+<pre class="r"><code>training &lt;- read.csv(&quot;Data/pml-training.csv&quot;, stringsAsFactors = FALSE)
 #Split it into test and train
 sample_size &lt;- floor(0.7*nrow(training))
 training_indices &lt;- sample(nrow(training),sample_size)
@@ -149,7 +148,16 @@ test_2 &lt;- training[-training_indices,]</code></pre>
 </div>
 <div id="preprocessing" class="section level2">
 <h2>Preprocessing</h2>
-<pre class="(r)"><code>train_2 &lt;- train_2[,-1]
+<p>In order to make the data set more manageable we:</p>
+<ul>
+<li><p>remove the columns which holds row numbers</p></li>
+<li><p>remove all the near zero variables</p></li>
+<li><p>do principal component analysis to lower the number of variables we have to deal with</p></li>
+<li><p>transform the timestamp variables from character to timestamp</p></li>
+</ul>
+<pre class="r"><code>train_2 &lt;- train_2[,-1]
+
+#Remove near zero 
 nzv &lt;- nearZeroVar(train_2, saveMetrics = TRUE)
 to_remove &lt;- which(nzv$nzv)
 train_2 &lt;- train_2[,-to_remove]
@@ -157,18 +165,12 @@ to_keep &lt;- lapply( train_2, function(x) sum(is.na(x)) / length(x) ) &lt; 0.1
 train_2 &lt;- train_2[ to_keep]
 
 # Principal Component Analysis
-preProc &lt;- preProcess(train_2, method = &quot;pca&quot;, pcaComp = 4)
+preProc &lt;- preProcess(train_2, method = &quot;pca&quot;, pcaComp = 10)
 todo &lt;- predict(preProc, train_2)
 
 # Making the variables friendlier
 todo$user_name &lt;- as.factor(todo$user_name)
 todo$classe &lt;- train_2$classe
-
-# Creating Dummy variables out of the factor variables
-dummies &lt;- dummyVars(classe ~ user_name, data = todo)
-am &lt;- predict(dummies, newdata = todo)
-todo &lt;- cbind (todo, data.table(am))
-todo &lt;- subset(todo, select = -user_name)
 
 #Creating useful timestamp
 todo$cvtd_timestamp &lt;- as.POSIXct(strptime(todo$cvtd_timestamp, format = &quot;%d/%m/%Y %H:%M&quot;))
@@ -176,12 +178,107 @@ todo$classe &lt;- factor(as.character(todo$classe))</code></pre>
 </div>
 <div id="model-selection" class="section level2">
 <h2>Model Selection</h2>
+<p>I found 4 models to run, which worked fine with the current selection of numeric and factor variables. They were run with the idea of later selecting the best ones. The Rpart method and the Ctree method were the worst performing ones, thus they were removed from the final prediction.</p>
+<pre class="r"><code>todo &lt;- data.table(todo)
+model &lt;- randomForest(as.factor(classe)~., data=todo)
+model2 &lt;- train(classe ~., data = todo, method = &quot;treebag&quot;)
+
+insample &lt;- predict(model, newdata = todo[,-3])
+insample2 &lt;- predict(model2, newdata = todo[,-3])</code></pre>
 </div>
-<div id="run-models-on-test-set" class="section level2">
-<h2>Run models on test set</h2>
+<div id="initial-model-evaluation" class="section level2">
+<h2>Initial model evaluation</h2>
+<pre class="r"><code>table(insample==todo$classe)/nrow(todo)</code></pre>
+<pre><code>## 
+## TRUE 
+##    1</code></pre>
+<pre class="r"><code>table(insample2==todo$classe)/nrow(todo)</code></pre>
+<pre><code>## 
+##        FALSE         TRUE 
+## 0.0001456134 0.9998543866</code></pre>
 </div>
-<div id="run-models-on-validation-set" class="section level2">
-<h2>Run models on validation set</h2>
+<div id="test-model-preprocessing" class="section level2">
+<h2>Test model preprocessing</h2>
+<pre class="r"><code>test_2 &lt;- test_2[,-1]
+test_2 &lt;- test_2[, -to_remove]
+test_2 &lt;- test_2[,to_keep]
+todo_test &lt;- predict(preProc, newdata = test_2)
+todo_test$user_name &lt;- as.factor(todo_test$user_name)
+todo_test$cvtd_timestamp &lt;- as.POSIXct(strptime(todo_test$cvtd_timestamp, format = &quot;%d/%m/%Y %H:%M&quot;))</code></pre>
+</div>
+<div id="run-models-and-cross-validaton" class="section level2">
+<h2>Run models and Cross validaton</h2>
+<pre class="r"><code>firstPrediciton &lt;- predict(model, newdata = todo_test[,-3])
+secondPrediction &lt;- predict(model2, newdata = todo_test[,-3])
+
+todo_test &lt;- cbind(todo_test, firstPrediciton)
+todo_test &lt;- cbind(todo_test, secondPrediction)
+
+predDF &lt;- data.frame(firstPrediciton, secondPrediction, classe = todo_test$classe)
+trainControlFunc &lt;- trainControl(method = &quot;cv&quot;, number=10)
+suppressWarnings(combModel &lt;- train(classe~., method=&quot;C5.0&quot;, data=predDF, trainControl = trainControlFunc))
+combPrediction &lt;- predict(combModel, newdata = predDF)
+print(combModel)</code></pre>
+<pre><code>## C5.0 
+## 
+## 5887 samples
+##    2 predictor
+##    5 classes: 'A', 'B', 'C', 'D', 'E' 
+## 
+## No pre-processing
+## Resampling: Bootstrapped (25 reps) 
+## Summary of sample sizes: 5887, 5887, 5887, 5887, 5887, 5887, ... 
+## Resampling results across tuning parameters:
+## 
+##   model  winnow  trials  Accuracy   Kappa    
+##   rules  FALSE    1      0.9744719  0.9677068
+##   rules  FALSE   10      0.9739351  0.9670279
+##   rules  FALSE   20      0.9738792  0.9669572
+##   rules   TRUE    1      0.9744719  0.9677068
+##   rules   TRUE   10      0.9742499  0.9674261
+##   rules   TRUE   20      0.9742499  0.9674261
+##   tree   FALSE    1      0.9744719  0.9677068
+##   tree   FALSE   10      0.9739351  0.9670279
+##   tree   FALSE   20      0.9737305  0.9667691
+##   tree    TRUE    1      0.9744719  0.9677068
+##   tree    TRUE   10      0.9741942  0.9673555
+##   tree    TRUE   20      0.9741942  0.9673555
+## 
+## Accuracy was used to select the optimal model using  the largest value.
+## The final values used for the model were trials = 1, model = rules
+##  and winnow = TRUE.</code></pre>
+<p>Cross validation was run on the last model that predicts. From it we can see that expected accuracy is around 97.5%, meaning the out of sample error should be a little more than 2.5%. And from the following results we can see that it shares first place with the first model (random forest), but I chose it because I expect blends to be better than the single one in predicting for a new dataset.</p>
+<pre class="r"><code>sum(firstPrediciton != todo_test$classe)/nrow(todo_test)</code></pre>
+<pre><code>## [1] 0.02531001</code></pre>
+<pre class="r"><code>sum(secondPrediction != todo_test$classe)/nrow(todo_test)</code></pre>
+<pre><code>## [1] 0.04229659</code></pre>
+<pre class="r"><code>sum(combPrediction != todo_test$classe)/nrow(todo_test)</code></pre>
+<pre><code>## [1] 0.02531001</code></pre>
+</div>
+<div id="run-models-on-new-data-set" class="section level2">
+<h2>Run models on new data set</h2>
+<div id="read-in" class="section level3">
+<h3>Read in</h3>
+<pre class="r"><code>results &lt;- read.csv(&quot;Data/pml-testing.csv&quot;, stringsAsFactors = FALSE)</code></pre>
+</div>
+<div id="preprocess" class="section level3">
+<h3>PreProcess</h3>
+<p>We do the same things over here that we did on the other two data sets</p>
+<pre class="r"><code>results &lt;- results[,-1]
+results &lt;- results[,-to_remove]
+results &lt;- results[,to_keep]
+todo_results &lt;- predict(preProc, newdata = results)
+todo_results$user_name &lt;- as.factor(todo_results$user_name)
+todo_results$cvtd_timestamp &lt;- as.POSIXct(strptime(todo_results$cvtd_timestamp, format = &quot;%d/%m/%Y %H:%M&quot;))</code></pre>
+</div>
+<div id="model-application" class="section level3">
+<h3>Model Application</h3>
+<pre class="r"><code>firstVal &lt;- predict(model, newdata = todo_results)
+secondVal &lt;- predict(model2, newdata = todo_results)
+predVDF &lt;- data.frame(firstPrediciton = firstVal, secondPrediction = secondVal)
+combPredV &lt;- predict(combModel, newdata = predVDF)
+todo_results &lt;- cbind(todo_results, combPredV)</code></pre>
+</div>
 </div>
 </div>
 
