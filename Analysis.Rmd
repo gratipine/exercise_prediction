@@ -1,2 +1,144 @@
 #Analysis
 
+## Goals of the analysis
+The goal of the analysis is to predict how well an experiment participant is doing an exercise based on a number of variables like positions and time.
+
+## Libraries used
+```{r}
+set.seed(123)
+library(caret)
+library(splines)
+library(kernlab)
+library(data.table)
+library(ggplot2)
+library(randomForest)
+```
+There are additional libraries used for each model, so if you are running this you might have to install additional packages.
+
+##Loading the data and splitting it
+
+We load just the traning data set, with the idea that the test dataset given in the exercise will be used as a validation set to calculate the out of sample error.
+
+```{r}
+training <- read.csv("Data/pml-training.csv", stringsAsFactors = FALSE)
+#Split it into test and train
+sample_size <- floor(0.7*nrow(training))
+training_indices <- sample(nrow(training),sample_size)
+
+train_2 <- training[training_indices,]
+test_2 <- training[-training_indices,]
+```
+
+##Preprocessing
+In order to make the data set more manageable we:
+ 
+- remove the columns which holds row numbers
+
+- remove all the near zero variables
+
+- do principal companent analysis to lower the number of variables we have to deal with 
+
+- create dummy variables for the remaining factor variables
+
+- transform the timestamp variables from character to timestamp
+
+```{r}
+train_2 <- train_2[,-1]
+
+#Remove near zero 
+nzv <- nearZeroVar(train_2, saveMetrics = TRUE)
+to_remove <- which(nzv$nzv)
+train_2 <- train_2[,-to_remove]
+to_keep <- lapply( train_2, function(x) sum(is.na(x)) / length(x) ) < 0.1
+train_2 <- train_2[ to_keep]
+
+# Principal Component Analysis
+preProc <- preProcess(train_2, method = "pca", pcaComp = 10)
+todo <- predict(preProc, train_2)
+
+# Making the variables friendlier
+todo$user_name <- as.factor(todo$user_name)
+todo$classe <- train_2$classe
+
+# Creating Dummy variables out of the factor variables
+
+dummies <- dummyVars(classe ~ user_name, data = todo)
+am <- predict(dummies, newdata = todo)
+todo <- cbind (todo, data.table(am))
+todo <- subset(todo, select = -user_name)
+
+#Creating useful timestamp
+todo$cvtd_timestamp <- as.POSIXct(strptime(todo$cvtd_timestamp, format = "%d/%m/%Y %H:%M"))
+todo$classe <- factor(as.character(todo$classe))
+```
+
+##Model Selection
+
+I found 4 models to run, which worked fine with the current selection of numeric and factor variables. They were run over here, with the idea of later selecting the best ones. The Rpart method and the Ctree method were the worst performing ones, thus they were removed from the final prediction.
+
+```{r}
+todo <- data.table(todo)
+model <- randomForest(as.factor(classe)~., data=todo)
+model2 <- train(classe ~., data = todo, method = "treebag")
+
+insample <- predict(model, newdata = todo[,-2])
+insample2 <- predict(model2, newdata = todo[,-2])
+```
+
+##Initial model evaluation
+```{r}
+table(insample==todo$classe)/nrow(todo)
+table(insample2==todo$classe)/nrow(todo)
+
+```
+##Test model preprocessing
+
+```{r}
+test_2 <- test_2[,-1]
+test_2 <- test_2[, -to_remove]
+test_2 <- test_2[,to_keep]
+todo_test <- predict(preProc, newdata = test_2)
+todo_test$user_name <- as.factor(todo_test$user_name)
+am <- predict(dummies, newdata = todo_test)
+todo_test <-cbind(todo_test, data.table(am))
+todo_test <- subset(todo_test, select = - user_name)
+todo_test$cvtd_timestamp <- as.POSIXct(strptime(todo_test$cvtd_timestamp, format = "%d/%m/%Y %H:%M"))
+```
+
+##Run models on test set
+```{r}
+firstPrediciton <- predict(model, newdata = todo_test[,-2])
+secondPrediction <- predict(model2, newdata = todo_test[,-2])
+
+todo_test <- cbind(todo_test, firstPrediciton)
+todo_test <- cbind(todo_test, secondPrediction)
+
+predDF <- data.frame(firstPrediciton, secondPrediction, classe = todo_test$classe)
+combModel <- train(classe~., method="C5.0", data=predDF)
+combPrediction <- predict(combModel, newdata = predDF)
+```
+
+```{r}
+sum(firstPrediciton != todo_test$classe)/nrow(todo_test)
+sum(secondPrediction != todo_test$classe)/nrow(todo_test)
+sum(combPrediction != todo_test$classe)/nrow(todo_test)
+```
+
+##Run models on validation set
+###Read in
+```{r}
+validation <- read.csv("Data/pml-testing.csv", stringsAsFactors = FALSE)
+```
+
+###PreProcess
+```{r}
+validation <- validation[,-1]
+validation <- validation[,-to_remove]
+validation <- validation[,to_keep]
+todo_validation <- predict(preProc, newdata = validation)
+todo_validation$user_name <- as.factor(todo_validation$user_name)
+am <- predict(dummies, newdata = todo_validation)
+todo_validation <- cbind(todo_validation, data.table(am))
+todo_validation <- subset(todo_validation, select = - user_name)
+todo_validation$cvtd_timestamp <- as.POSIXct(strptime(todo_validation$cvtd_timestamp, format = "%d/%m/%Y %H:%M"))
+```
