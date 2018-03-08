@@ -7,6 +7,7 @@
 # library(randomForest)
 
 # Read in data
+
 training <- read.csv("Data/pml-training.csv", stringsAsFactors = FALSE)
 #Split it into test and train
 sample_size <- floor(0.7*nrow(training))
